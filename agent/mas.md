@@ -1,105 +1,86 @@
-🤖 Gritto Agent Service — Design & Implementation Spec
+🤖 Gritto Agent Service — Updated Design (LLM-Powered Workflow)
 
 Scope
 
-This document defines the architecture and interface of the Gritto Python Agent Service, which powers goal planning and reasoning for the Gritto app.
-It is a standalone Cloud Run microservice, invoked by the backend via POST /agent/run.
+This document updates the architecture and implementation of the Gritto Python Agent Service, enhancing both `CheckApprovalAgent` and `FinalizeAgent` with LLM-based reasoning while maintaining strict JSON output for plan structures.
 
-⸻
+────────────────────────────────────────────
 
-🧩 1️⃣ System Architecture
+🔌 1️⃣ System Architecture
 
 Client (Mobile App)
-   │
-   ▼
-Backend (TypeScript / Express)
-   │
-   │  POST /agent/run
-   ▼
-────────────────────────────────────────────
-Gritto Agent Service (Python / ADK)
 │
+▼
+Backend (TypeScript / Express)
+│
+│  POST /agent/run
+▼
+Gritto Agent Service (Python / ADK)
+
 ├── GoalPlanningWorkflow (SequentialAgent)
-│    ├── CheckApprovalAgent
-│    ├── PlanAgent
-│    └── FinalizeAgent
+│    ├── CheckApprovalAgent (LLM-powered)
+│    ├── PlanAgent (LLM-powered)
+│    └── FinalizeAgent (LLM-powered)
 │
 └── Returns structured JSON:
-     {
-       "reply": "...",
-       "action": { "type": "...", "payload": {...} },
-       "state": {...}
-     }
-────────────────────────────────────────────
+{
+"reply": "...",
+"action": { "type": "...", "payload": {...} },
+"state": {...}
+}
 
 Purpose:
-The agent interprets user input, generates/refines structured goal plans, and outputs reasoning results and action intents (save_preview / finalize_goal) for the backend to persist.
+The agent interprets user messages, reasons about approval/refinement, and produces structured goal plans compliant with the `GoalPreview` model. All reasoning outputs are strict JSON, validated before returning.
 
-⸻
+────────────────────────────────────────────
 
 🌐 2️⃣ Exposed Endpoint
 
-POST /agent/run
+**POST /agent/run**
 
-Property	Description
-Purpose	Execute one conversational reasoning step in the Goal Planning workflow.
-Consumes	JSON input containing user message, context, and current session state.
-Produces	Structured JSON output with reply, action, and state fields.
-Invocation	Called exclusively by backend Cloud Run (not by clients directly).
+Purpose: Execute one reasoning step in the goal planning workflow.
+Consumes: JSON input from backend containing `message`, `context`, and `state`.
+Produces: Strict JSON output with `reply`, `action`, and `state`.
+Invocation: Only by backend Cloud Run service.
 
-
-⸻
+────────────────────────────────────────────
 
 ⚙️ 3️⃣ Main Functionality
 
-Function	Description
-1️⃣ Interpret user input	Detects whether user is approving, refining, or starting a new plan.
-2️⃣ Generate/refine plan	Uses an LLM (Gemini / Gemma) to produce structured plan JSON conforming to Gritto’s GoalPreview model.
-3️⃣ Summarize and route actions	Returns the proper message and action type for the backend to execute (save_preview, finalize_goal).
-4️⃣ State management	Updates session lifecycle state (step, iteration, sessionActive) deterministically.
+1. Interpret user message using LLM reasoning.
+2. Generate or refine structured goal plan JSON.
+3. Produce a final user-facing reply and backend action.
+4. Maintain consistent session state.
 
+────────────────────────────────────────────
 
-⸻
+📥 4️⃣ Input Format
 
-📥 4️⃣ Expected Input Format
-
+```json
 {
   "userId": "u_001",
   "sessionId": "sess_goal_001",
-  "message": "Can you move the design phase to next week?",
-  "context": {
-    "existingGoals": [
-      { "id": "g_01", "title": "Learn Kotlin" }
-    ],
-    "calendarEvents": [
-      { "title": "Work Meeting", "start": "2025-11-03T14:00:00Z", "end": "2025-11-03T15:00:00Z" }
-    ]
-  },
+  "message": "Looks good!",
+  "context": { ... },
   "state": {
     "step": "plan_generated",
     "iteration": 1,
     "sessionActive": true,
-    "proposed_plan": {
-      "goal": { "title": "Build Portfolio Website" },
-      "milestones": [
-        { "title": "Design Phase", "tasks": [] }
-      ]
-    }
+    "proposed_plan": { ... }
   }
 }
+```
 
+────────────────────────────────────────────
 
-⸻
+📤 5️⃣ Output Schema
 
-📤 5️⃣ Standard Output Format
-
-Every response must follow this schema:
-
+```json
 {
-  "reply": "string (agent's message to user)",
+  "reply": "string",
   "action": {
     "type": "save_preview" | "finalize_goal" | "none",
-    "payload": { "structured": "data depending on type" }
+    "payload": { ... }
   },
   "state": {
     "step": "plan_generated" | "plan_iteration" | "finalized",
@@ -107,282 +88,250 @@ Every response must follow this schema:
     "sessionActive": "boolean"
   }
 }
+```
 
+All fields must be valid JSON, verified via schema validation before return.
 
-⸻
+────────────────────────────────────────────
 
-🧠 6️⃣ Internal Agent Workflow
+🧠 6️⃣ Internal Workflow
 
-Workflow: GoalPlanningWorkflow (SequentialAgent)
+**Workflow: GoalPlanningWorkflow (SequentialAgent)**
 
-CheckApprovalAgent
-     ↓
-PlanAgent (only if needed)
-     ↓
-FinalizeAgent
+CheckApprovalAgent (LLM) ↓
+PlanAgent (LLM, conditional) ↓
+FinalizeAgent (LLM)
 
-Order	Agent	Purpose
-1️⃣	CheckApprovalAgent	Classifies message intent: user approval vs refinement.
-2️⃣	PlanAgent	Generates or refines structured goal plan if needed.
-3️⃣	FinalizeAgent	Composes reply, determines next action type, and updates state.
+| Order | Agent              | Role                                             |
+| ----- | ------------------ | ------------------------------------------------ |
+| 1     | CheckApprovalAgent | Classify message intent (approval vs refinement) |
+| 2     | PlanAgent          | Generate or refine plan JSON                     |
+| 3     | FinalizeAgent      | Compose structured reply and next action         |
 
+────────────────────────────────────────────
 
-⸻
+🔷 7️⃣ LLM Agent Definitions
 
-🔍 7️⃣ Agent Definitions
+### 🔹 CheckApprovalAgent
 
-🟣 CheckApprovalAgent
+**Type:** `LlmAgent`
 
-Role:
-Decide if the user message indicates approval (finalize_only) or needs planning (needs_planning).
+**Instruction:**
 
-Input (from session.state):
+> Analyze the user's message and decide if it indicates goal plan approval or refinement. Use conversation context to reason. Output a JSON object with fields:
+>
+> * `routing`: 'finalize_only' or 'needs_planning'
+> * `detectedConsent`: boolean
+> * `reason`: short reasoning string.
 
-{ "user_goal_text": "Looks good!", "proposed_plan": { ... } }
+**Output Key:** `approval_decision`
 
-Output (to session.state):
+Additionally, store the latest user message into the session context for reference:
 
-{ "routing": "finalize_only", "detectedConsent": true }
+```python
+ctx.session.state["user_goal_text"] = ctx.input.message
+```
 
-Pseudocode:
+Example Output:
 
-class CheckApprovalAgent(BaseAgent):
-    async def _run_async_impl(self, ctx):
-        s = ctx.session.state
-        text = (s.get("user_goal_text") or "").lower()
-        has_plan = bool(s.get("proposed_plan"))
-
-        positives = ["approve", "looks good", "yes", "okay", "save", "go ahead"]
-        negators = ["but", "however", "not yet", "change", "adjust", "later"]
-
-        positive = any(p in text for p in positives)
-        negative = any(n in text for n in negators)
-        s["detectedConsent"] = positive and not negative
-        s["routing"] = "finalize_only" if s["detectedConsent"] and has_plan else "needs_planning"
-
-        yield Event(author=self.name, content=f"Decision: {s['routing']}")
-
-
-⸻
-
-🟢 PlanAgent
-
-Role:
-Generate a new structured plan or refine an existing one using an LLM (Gemini / Gemma).
-
-Input:
-
-{ "routing": "needs_planning", "proposed_plan": { ...optional... } }
-
-Output:
-
-{ "proposed_plan": { "goal": {...}, "milestones": [...], "iteration": 2 } }
-
-LLM Instruction Example:
-
-“If session.state[‘proposed_plan’] is empty, create a new structured goal plan following Gritto’s GoalPreview model.
-If it exists, refine it based on the latest user input.
-Always output valid JSON conforming to the model.”
-
-Pseudocode:
-
-PlanAgent = LlmAgent(
-    name="PlanAgent",
-    instruction="Generate or refine structured plan JSON according to Gritto GoalPreview schema.",
-    output_key="proposed_plan"
-)
-
-
-⸻
-
-🟡 FinalizeAgent
-
-Role:
-Generate the agent’s final message and an action payload that the backend will interpret and persist.
-
-Input:
-
+```json
 {
   "routing": "finalize_only",
-  "proposed_plan": { ... },
-  "iteration": 1
+  "detectedConsent": true,
+  "reason": "The user said 'Looks good', indicating approval."
 }
+```
 
-Output (example for refinement):
+Post-processing:
 
+```python
+ctx.session.state.update({
+  "routing": decision["routing"],
+  "detectedConsent": decision["detectedConsent"]
+})
+```
+
+---
+
+### 🔹 PlanAgent
+
+**Type:** `LlmAgent`
+
+**Instruction:**
+
+> Generate or refine a structured plan following Gritto's GoalPreview schema. If state['proposed_plan'] is empty, create a new one; otherwise, adjust the existing plan. The user’s most recent input is available in `state['user_goal_text']` and should be considered for updates. Always output valid JSON conforming to the GoalPreview model.
+
+**Output Key:** `proposed_plan`
+
+Example Output:
+
+```json
 {
-  "reply": "I’ve updated your plan as requested.",
-  "action": {
-    "type": "save_preview",
-    "payload": { "goalPreview": {...}, "iteration": 2 }
-  },
-  "state": { "step": "plan_iteration", "iteration": 2, "sessionActive": true }
+  "goal": { "title": "Build Portfolio Website" },
+  "milestones": [ { "title": "Design Phase", "tasks": [] } ],
+  "iteration": 2
 }
+```
 
-Output (example for approval):
+---
 
+### 🔹 FinalizeAgent
+
+**Type:** `LlmAgent`
+
+**Instruction:**
+
+> Generate the final user-facing reply and backend action. Use session.state.routing, proposed_plan, and user_goal_text to decide whether to save or finalize. Output must be a JSON object with:
+>
+> * `reply`: string
+> * `action`: object with `type` and `payload`
+> * `state`: object with step, iteration, sessionActive.
+
+**Output Key:** `final_response`
+
+Example Output:
+
+```json
 {
   "reply": "I've created a goal for you: Build Portfolio Website 🎯",
   "action": {
     "type": "finalize_goal",
     "payload": {
-      "goalPreviewId": "gp_456",
+      "goalPreviewId": "gp_123",
       "goal": { "title": "Build Portfolio Website" },
-      "milestones": [...]
+      "milestones": []
     }
   },
   "state": { "step": "finalized", "sessionActive": false }
 }
+```
 
-Pseudocode:
+────────────────────────────────────────────
 
-class FinalizeAgent(BaseAgent):
-    async def _run_async_impl(self, ctx):
-        s = ctx.session.state
-        plan = s.get("proposed_plan")
-        routing = s.get("routing")
-        iteration = s.get("iteration", 0)
-        reply, action = "", {}
+📊 8️⃣ Response Contract Summary
 
-        if routing == "finalize_only":
-            reply = f"I've created a goal for you: {plan['goal']['title']} 🎯"
-            action = {
-                "type": "finalize_goal",
-                "payload": {
-                    "goalPreviewId": plan.get("id"),
-                    "goal": plan["goal"],
-                    "milestones": plan.get("milestones", [])
-                }
-            }
-            s.update({"step": "finalized", "sessionActive": False})
-        else:
-            iteration += 1
-            s.update({"iteration": iteration, "step": "plan_iteration", "sessionActive": True})
-            reply = "Here’s a plan based on your message!" if iteration == 1 else "I’ve updated your plan as requested."
-            action = {
-                "type": "save_preview",
-                "payload": { "goalPreview": plan, "iteration": iteration }
-            }
+| Field            | Type   | Description                       |
+| ---------------- | ------ | --------------------------------- |
+| `reply`          | string | Final message for the user        |
+| `action.type`    | string | `save_preview` or `finalize_goal` |
+| `action.payload` | object | Structured plan or goal data      |
+| `state`          | object | Updated session state for backend |
 
-        yield Event(author=self.name, content=reply, actions={"metadata": {"action": action}})
+────────────────────────────────────────────
 
+💬 9️⃣ Example Message Flows
 
-⸻
+**Case 1 — User starts a new goal**
 
-🧾 8️⃣ Response Contract Summary
-
-Field	Type	Description
-reply	string	The final text message for the user.
-action.type	`“save_preview”	“finalize_goal”
-action.payload	object	Structured data (GoalPreview JSON or finalized goal details).
-state	object	Updated session state for backend to persist.
-
-
-⸻
-
-💬 9️⃣ Example Message Walkthroughs
-
-Case 1 — User starts a new plan (no consent signal, no plan)
-
-Input:
-
-“I want to learn Kotlin.”
-
-Agents run:
-CheckApproval (needs_planning) → PlanAgent → FinalizeAgent
+Agents: CheckApproval (needs_planning) → PlanAgent → FinalizeAgent
 
 Output:
 
+```json
 {
   "reply": "Here’s a plan based on your message!",
-  "action": {
-    "type": "save_preview",
-    "payload": { "goalPreview": {...}, "iteration": 1 }
-  },
+  "action": { "type": "save_preview", "payload": { ... } },
   "state": { "step": "plan_generated", "iteration": 1, "sessionActive": true }
 }
+```
 
+---
 
-⸻
+**Case 2 — User refines existing plan**
 
-Case 2 — User refines existing plan
-
-Input:
-
-“Can you add a milestone for mobile design?”
-
-Agents run:
-CheckApproval (needs_planning) → PlanAgent → FinalizeAgent
+Agents: CheckApproval (needs_planning) → PlanAgent → FinalizeAgent
 
 Output:
 
+```json
 {
   "reply": "I’ve updated your plan as requested.",
   "action": {
     "type": "save_preview",
-    "payload": { "goalPreview": {...}, "iteration": 2 }
+    "payload": {
+      "goalPreview": { "goal": { "title": "Build Portfolio Website" }, "iteration": 2 }
+    }
   },
   "state": { "step": "plan_iteration", "iteration": 2, "sessionActive": true }
 }
+```
 
+---
 
-⸻
+**Case 3 — User approves the plan**
 
-Case 3 — User approves the plan
-
-Input:
-
-“Looks good!”
-
-Agents run:
-CheckApproval (finalize_only) → FinalizeAgent
+Agents: CheckApproval (finalize_only) → FinalizeAgent
 
 Output:
 
+```json
 {
   "reply": "I've created a goal for you: Learn Kotlin 🎯",
+  "action": { "type": "finalize_goal", "payload": { ... } },
+  "state": { "step": "finalized", "sessionActive": false }
+}
+```
+
+---
+
+**Case 4 — User refines plan and approval detected in follow-up message**
+
+Input: "Let's finalize this version of the design phase."
+
+Agents: CheckApproval (detectedConsent: true) → FinalizeAgent
+
+Output:
+
+```json
+{
+  "reply": "Understood! I’ll save your final plan now.",
   "action": {
     "type": "finalize_goal",
-    "payload": { "goalPreviewId": "gp_101", "goal": {...}, "milestones": [...] }
+    "payload": {
+      "goalPreviewId": "gp_459",
+      "goal": { "title": "Build Portfolio Website" },
+      "milestones": [ { "title": "Design Phase", "tasks": [] } ]
+    }
   },
   "state": { "step": "finalized", "sessionActive": false }
 }
+```
 
+---
 
-⸻
+**Case 5 — User refines plan mid-conversation (no consent)**
 
-Case 4 — Post-finalization (new goal start)
+Input: "Can you move the first milestone to next week?"
 
-Input:
-
-“Now I want to start learning Flutter.”
-
-Agents run:
-CheckApproval (needs_planning) → PlanAgent → FinalizeAgent
+Agents: CheckApproval (needs_planning) → PlanAgent → FinalizeAgent
 
 Output:
 
+```json
 {
-  "reply": "Here’s a plan based on your new message!",
+  "reply": "Got it! I’ve shifted your first milestone to next week.",
   "action": {
     "type": "save_preview",
-    "payload": { "goalPreview": {...}, "iteration": 1 }
+    "payload": {
+      "goalPreview": { "goal": { "title": "Build Portfolio Website" }, "iteration": 3 }
+    }
   },
-  "state": { "step": "plan_generated", "iteration": 1, "sessionActive": true }
+  "state": { "step": "plan_iteration", "iteration": 3, "sessionActive": true }
 }
+```
 
+────────────────────────────────────────────
 
-⸻
+📈 10️⃣ Summary
 
-✅ 10️⃣ Summary
+| Layer          | Role                                                |
+| -------------- | --------------------------------------------------- |
+| Agent Server   | Stateless reasoning engine producing JSON responses |
+| Backend Server | Executes actions and persists data in Firestore     |
+| Client App     | Displays replies and previews goal plan data        |
 
-Layer	Role
-Agent Server	Stateless reasoning engine that decides “what to do next.”
-Backend Server	Executes actions, persists results, manages Firestore and sessions.
-Client App	Displays reply, previews plan data, and continues conversation.
+All LLM agents now produce **schema-validated JSON**, maintaining Cloud Run reliability while improving conversational quality and reasoning depth.
 
-The agent never writes to the database directly — it only returns structured actions describing what should happen.
+────────────────────────────────────────────
 
-⸻
-
-End of Document — Gritto Agent Implementation Spec (Codex Reference)
+End of Document — LLM-Enhanced Gritto Agent Workflow Spec

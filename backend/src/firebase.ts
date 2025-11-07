@@ -9,7 +9,7 @@ export function getFirestore(): FirebaseFirestore.Firestore {
     if (firestore) {
         return firestore;
     }
-
+    
     if (!admin.apps.length) {
         admin.initializeApp();
     }

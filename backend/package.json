@@ -6,7 +6,7 @@
     "scripts": {
         "build": "tsc",
         "start": "node dist/index.js",
-        "dev": "ts-node --project tsconfig.json src/index.ts",
+        "dev": "nodemon --watch src --watch types --ext ts,json,d.ts --exec 'ts-node --project tsconfig.json --files src/index.ts'",
         "test": "echo \"Error: no test specified\" && exit 1"
     },
     "repository": {
@@ -25,12 +25,16 @@
         "dotenv": "^17.2.3",
         "express": "^5.1.0",
         "firebase-admin": "^13.5.0",
+        "google-auth-library": "^9.0.0",
+        "jsonwebtoken": "^9.0.2",
         "morgan": "^1.10.1"
     },
     "devDependencies": {
         "@types/express": "^5.0.1",
+        "@types/jsonwebtoken": "^9.0.6",
         "@types/morgan": "^1.9.9",
         "@types/node": "^22.10.1",
+        "nodemon": "^3.1.10",
         "ts-node": "^10.9.2",
         "typescript": "^5.6.3"
     }

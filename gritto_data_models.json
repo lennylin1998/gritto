@@ -1,0 +1,105 @@
+{
+  "User": {
+    "id": "string",
+    "name": "string",
+    "email": "string",
+    "profileImageUrl": "string (optional)",
+    "timezone": "string (optional)",
+    "availableHoursPerWeek": "number",
+    "createdAt": "Timestamp",
+    "updatedAt": "Timestamp"
+  },
+  "Goal": {
+    "id": "string",
+    "userId": "string (reference to User)",
+    "title": "string",
+    "description": "string",
+    "context": "string",
+    "minHoursPerWeek": "number",
+    "priority": "number",
+    "color": "number",
+    "status": "enum('active', 'completed')",
+    "startDate": "Timestamp (optional)",
+    "targetDate": "Timestamp (optional)",
+    "milestones": "string[] (references to Milestone documents)",
+    "createdAt": "Timestamp",
+    "updatedAt": "Timestamp"
+  },
+  "Milestone": {
+    "id": "string",
+    "goalId": "string (reference to Goal)",
+    "title": "string",
+    "description": "string (optional)",
+    "status": "enum('blocked', 'in_progress', 'finished')",
+    "tasks": "string[]",
+    "createdAt": "Timestamp",
+    "updatedAt": "Timestamp"
+  },
+  "Task": {
+    "id": "string",
+    "milestoneId": "string (reference to Milestone)",
+    "title": "string",
+    "description": "string (optional)",
+    "date": "Timestamp (must fit within 24h window)",
+    "estimatedHours": "number (optional)",
+    "done": "boolean",
+    "createdAt": "Timestamp",
+    "updatedAt": "Timestamp"
+  },
+  "Chat": {
+    "id": "string",
+    "userId": "string (reference to User)",
+    "sessionId": "string",
+    "entries": [
+      {
+        "sender": "enum('user', 'agent')",
+        "message": "string",
+        "timestamp": "Timestamp"
+      }
+    ],
+    "createdAt": "Timestamp"
+  },
+  "SessionState": {
+    "id": "string",
+    "userId": "string (reference to User)",
+    "step": "enum('plan_generated', 'plan_iteration', 'finalized')",
+    "iteration": "number",
+    "sessionActive": "boolean",
+    "goalPreviewId": "string (reference to GoalPreview, optional)",
+    "state": "enum('plan_generated', 'finalized')",
+    "detectedConsent": "boolean (optional)",
+    "createdAt": "Timestamp",
+    "updatedAt": "Timestamp"
+  },
+  "GoalPreview": {
+    "id": "string",
+    "userId": "string (reference to User)",
+    "sessionId": "string (reference to Chat session)",
+    "goalDraft": {
+      "title": "string",
+      "description": "string (optional)",
+      "context": "string (optional)",
+      "priority": "number (optional)",
+      "minHoursPerWeek": "number (optional)",
+      "color": "number (optional)",
+      "milestones": [
+        {
+          "title": "string",
+          "description": "string (optional)",
+          "tasks": [
+            {
+              "title": "string",
+              "description": "string (optional)",
+              "date": "Timestamp (optional)",
+              "estimatedHours": "number (optional)"
+            }
+          ]
+        }
+      ]
+    },
+    "iteration": "number (auto-increment for refinement loops)",
+    "status": "enum('draft', 'awaiting_consent', 'finalized')",
+    "createdAt": "Timestamp",
+    "updatedAt": "Timestamp"
+  }
+}
