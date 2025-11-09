@@ -173,6 +173,7 @@ class GeminiJsonResponder:
             return None
 
         prompt = self._build_check_prompt(message=message, state_snapshot=state_snapshot)
+        print("=========DEBUG message: ", message)
         return await self._invoke_json(prompt)
 
     async def finalize_response(

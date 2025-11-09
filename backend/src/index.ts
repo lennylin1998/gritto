@@ -1094,6 +1094,8 @@ app.post(
 
             if (responseAction?.type === 'save_preview') {
                 const preview = extractPreviewPayload(actionPayload);
+                console.log("GOAL PREVIEW EXTRACTED DATA:");
+                console.log(preview.data);
                 const previewRecord = await upsertGoalPreview({
                     id: preview.id,
                     userId,

@@ -1,8 +1,11 @@
-🤖 Gritto Agent Service — Design & Implementation Spec (Final ADK Cloud Run Version, LLM-based Agents)
+🤖 Gritto Agent Service — Design & Implementation Spec
+
+(Final ADK Cloud Run Version — Context-Persistent LLM Agents on Cloud Run)
 
 Scope
-Defines the architecture and interaction flow of the Gritto Goal Planning Agent Service, a multi-agent workflow that generates, refines, and finalizes structured goal plans with contextual scheduling awareness.
-It is built using Google’s Agent Development Kit (ADK) and deployed to Google Cloud Run.
+
+Defines the architecture and reasoning flow of the Gritto Goal Planning Agent Service, a multi-agent workflow that generates, refines, and finalizes structured goal plans with full session-state context persistence.
+It is implemented using Google’s Agent Development Kit (ADK) and deployed on Google Cloud Run.
 
 ⸻
 
@@ -14,7 +17,8 @@ Client (KMP App)
 Backend (TypeScript / Express)
    │
    ├─ /v1/agent/goal/session:message
-   │    ├─ builds ADK DTO (text + goalPreview + time + task context)
+   │    ├─ ensures valid session
+   │    ├─ passes user message only (context is persisted)
    │    └─ sends → POST {AGENT_APP_URL}/run
    ▼
 ──────────────────────────────────────────────
@@ -25,9 +29,9 @@ Gritto Agent Service (Python / ADK)
 │    ├── PlanAgent (LLM)
 │    └── FinalizeAgent (LLM)
 │
-└── Endpoints:
-     • POST /apps/goal_planning_agent/users/{userId}/sessions/{sessionId}
-     • POST /run
+└── Persistent Session Store (SQLite / SQL / Firestore)
+     • Restores ctx.state across sessions
+     • Stores goalPreview, availableHours, upcomingTasks
 ──────────────────────────────────────────────
 
 
@@ -39,52 +43,20 @@ A) Initialize Remote Session
 
 POST {AGENT_APP_URL}/apps/goal_planning_agent/users/{userId}/sessions/{sessionId}
 
-Body:
-
 {
   "preferred_language": "English",
   "init": true
 }
 
-
-⸻
-
 B) Execute Reasoning Step
 
 POST {AGENT_APP_URL}/run
 
-⸻
-
-📦 3️⃣ Expected Input (Backend → Agent)
-
-DTO Schema
-
-interface AgentMessageDTO {
-  app_name: string;               // "goal_planning_agent"
-  user_id: string;                // Firestore user ID
-  session_id: string;             // Session ID (shared with backend)
-  new_message: {
-    role: "user";
-    parts: AgentMessagePart[];
-  };
-}
-
-type AgentMessagePart =
-  | { text: string }
-  | {
-      function_call: {
-        name:
-          | "goal_preview_context"
-          | "time_context"
-          | "task_context";
-        args: Record<string, any>;
-      };
-    };
-
+The backend sends only the new user message; context is retrieved automatically from the persisted session state.
 
 ⸻
 
-Example — Full Request
+📦 3️⃣ Input Schema (Backend → Agent)
 
 {
   "app_name": "goal_planning_agent",
@@ -93,53 +65,17 @@ Example — Full Request
   "new_message": {
     "role": "user",
     "parts": [
-      {
-        "text": "Add a design milestone next week, but don’t overlap with my meetings."
-      },
-      {
-        "function_call": {
-          "name": "goal_preview_context",
-          "args": {
-            "goalPreview": {
-              "goal": { "title": "Build Portfolio Website" },
-              "milestones": [
-                {
-                  "title": "Design Phase",
-                  "tasks": [
-                    { "title": "UI Layout", "date": "2025-11-10", "estimatedHours": 4 }
-                  ]
-                }
-              ],
-              "iteration": 1,
-              "status": "draft"
-            }
-          }
-        }
-      },
-      {
-        "function_call": {
-          "name": "time_context",
-          "args": { "availableHoursLeft": 18 }
-        }
-      },
-      {
-        "function_call": {
-          "name": "task_context",
-          "args": {
-            "upcomingTasks": [
-              {
-                "id": "t_301",
-                "title": "Team Meeting",
-                "date": "2025-11-10T15:00:00Z",
-                "estimatedHours": 2
-              }
-            ]
-          }
-        }
-      }
+      { "text": "Move the design phase to next week, and don’t overlap with team meetings." }
     ]
   }
 }
+
+Backend does not resend context each time.
+The agent automatically restores:
+
+ctx.state["goalPreview"]
+ctx.state["availableHoursLeft"]
+ctx.state["upcomingTasks"]
 
 
 ⸻
@@ -150,7 +86,7 @@ Example — Full Request
   "reply": "string",
   "action": {
     "type": "save_preview" | "finalize_goal" | "none",
-    "payload": { "structured": "data depending on type" }
+    "payload": { "goalDraft": { ...structured data... } }
   },
   "state": {
     "step": "plan_generated" | "plan_iteration" | "finalized",
@@ -162,123 +98,133 @@ Example — Full Request
 
 ⸻
 
-⚙️ 5️⃣ Main Functionality
+⚙️ 5️⃣ Core Logic Overview
 
 Function	Description
-Interpret intent	Uses LLM to determine user’s approval/refinement intent.
-Generate/refine plan	Uses LLM to produce structured GoalPreview JSON respecting available hours and tasks.
-Finalize goal	Uses LLM to summarize final decision and output structured finalize_goal payload.
-Maintain session	Updates iteration, active status, and state transitions.
+CheckApprovalAgent	Detects whether user approves the current plan or requests changes.
+PlanAgent	Revises or generates a plan using stored context (goalPreview, hours left, upcoming tasks).
+FinalizeAgent	Confirms and outputs the final goal plan with structured JSON.
+Session Manager	Persists ctx.state in the session database (restored on every run).
 
 
 ⸻
 
-🧠 6️⃣ Internal Workflow
+🧠 6️⃣ Context Model (Persisted Across Sessions)
 
-Workflow: GoalPlanningWorkflow (SequentialAgent)
+Each agent workflow uses ctx.state for durable memory.
 
-Order	Agent	Description
-1️⃣	CheckApprovalAgent (LLM)	Classifies intent via LLM reasoning (“approve”, “needs changes”, “new goal”).
-2️⃣	PlanAgent (LLM)	Generates or refines structured plan JSON.
-3️⃣	FinalizeAgent (LLM)	Composes final reply and structured action JSON (save_preview / finalize_goal).
+Key	Type	Description
+goalPreview	object	Previous goal draft or latest refined version.
+availableHoursLeft	number	Remaining hours available for the current planning window.
+upcomingTasks	list	Scheduled tasks (with timestamps, durations) to avoid conflicts.
 
-
-⸻
-
-🧩 7️⃣ Context Extraction Utility
-
-def extract_context(ctx):
-    parts = ctx.input.parts
-    get = lambda n: next((p.function_call.args
-                          for p in parts
-                          if hasattr(p, "function_call")
-                          and p.function_call.name == n), None)
-    return {
-        "goalPreview": (get("goal_preview_context") or {}).get("goalPreview"),
-        "availableHoursLeft": (get("time_context") or {}).get("availableHoursLeft"),
-        "upcomingTasks": (get("task_context") or {}).get("upcomingTasks", [])
-    }
-
+These are initialized during the first planning step and restored automatically on all subsequent agent calls.
 
 ⸻
 
-🔵 8️⃣ CheckApprovalAgent (LLM-Powered)
-
-Instead of static keyword matching, this agent uses LLM reasoning to classify the message as approval, refinement, or new plan request.
+🔵 7️⃣ CheckApprovalAgent (LLM-Powered)
 
 from google.adk.agents import LlmAgent
 
 CheckApprovalAgent = LlmAgent(
     name="CheckApprovalAgent",
     instruction=(
-        "Analyze the user's message and current proposed plan to decide the next action. "
-        "Output JSON with keys: { 'routing': 'finalize_only' | 'needs_planning', "
-        "'detectedConsent': true|false }. "
-        "Routing = 'finalize_only' if user clearly approves or confirms the plan; "
-        "'needs_planning' if they request changes, refinements, or a new plan."
+        "Analyze the user's message and the existing goal plan (ctx.state['goalPreview']) "
+        "to determine intent. Output JSON with keys: "
+        "{ 'routing': 'finalize_only' | 'needs_planning', 'detectedConsent': true|false }. "
+        "'finalize_only' means the user approves or confirms the plan. "
+        "'needs_planning' means refinement, update, or new plan creation is needed."
     ),
     output_key="routing"
 )
 
-Example LLM Output:
+Example Output
 
-{
-  "routing": "needs_planning",
-  "detectedConsent": false
-}
+{ "routing": "needs_planning", "detectedConsent": false }
 
 
 ⸻
 
-🟢 9️⃣ PlanAgent (LLM-Powered)
-
-Uses an LLM to generate or refine a plan considering goalPreview, availableHoursLeft, and upcomingTasks.
+🟢 8️⃣ PlanAgent (LLM-Powered + Context-Bound Reasoning)
 
 PlanAgent = LlmAgent(
     name="PlanAgent",
     instruction=(
-        "You are a goal planning assistant. Given the user's message, the current proposed plan, "
-        "remaining available hours, and upcoming tasks, generate or refine a structured goal plan "
-        "in valid JSON conforming to the GoalPreview schema. Ensure that new tasks do not exceed "
-        "available hours and do not overlap with existing upcomingTasks. "
-        "Output JSON under the key 'proposed_plan'."
+        "You are a goal planning assistant. You have full context via ctx.state, including: "
+        "- ctx.state['goalPreview']: the user's current or previous goal plan. "
+        "- ctx.state['availableHoursLeft']: total time remaining for scheduling. "
+        "- ctx.state['upcomingTasks']: existing future tasks (must not overlap). "
+        "\n\n"
+        "TASK: Use this context to generate or refine a structured goal plan JSON under 'goalDraft'. "
+        "Rules:\n"
+        "1. Respect availableHoursLeft — total estimatedHours across all tasks must not exceed it.\n"
+        "2. Avoid conflicts — new or rescheduled tasks must not overlap with upcomingTasks.\n"
+        "3. When goalPreview exists, update or refine it instead of starting from scratch.\n"
+        "4. Always output a valid JSON object under key 'goalDraft' following the GoalPreview schema."
     ),
     output_key="proposed_plan"
 )
 
+📋 Required Output Schema
+
+{
+  "goalDraft": {
+    "title": "string",
+    "description": "string (optional)",
+    "milestones": [
+      {
+        "title": "string",
+        "description": "string (optional)",
+        "tasks": [
+          {
+            "title": "string",
+            "description": "string (optional)",
+            "date": "Timestamp",
+            "estimatedHours": "number"
+          }
+        ]
+      }
+    ]
+  }
+}
+
+✅ LLM Guidance:
+	•	Use ctx.state['goalPreview'] when revising an existing plan.
+	•	Do not exceed total available hours (ctx.state['availableHoursLeft']).
+	•	Avoid all time overlaps with ctx.state['upcomingTasks'].
+	•	Ensure the JSON is strictly valid, ready for backend persistence.
 
 ⸻
 
-🟡 🔁 FinalizeAgent (LLM-Powered)
-
-Uses LLM reasoning to produce a polished response and structured action payload (save_preview or finalize_goal).
+🟡 9️⃣ FinalizeAgent (LLM-Powered)
 
 FinalizeAgent = LlmAgent(
     name="FinalizeAgent",
     instruction=(
-        "Based on the current routing and proposed plan, craft a user-facing message "
-        "and structured JSON under 'final_output'. "
+        "Based on routing and proposed plan in ctx.state, craft a user-facing summary message "
+        "and structured JSON under 'final_output'.\n"
         "If routing == 'finalize_only', create a 'finalize_goal' action: "
-        "{ 'type': 'finalize_goal', 'payload': { 'goalPreviewId': plan.id, 'goal': plan.goal, 'milestones': plan.milestones } }. "
-        "If routing == 'needs_planning', return 'save_preview' action: "
-        "{ 'type': 'save_preview', 'payload': { 'goalPreview': plan, 'iteration': iteration+1 } }. "
-        "Always respond in valid JSON with keys: reply, action, and state."
+        "{ 'type': 'finalize_goal', 'payload': { 'goalDraft': ctx.state['goalPreview'] } }.\n"
+        "If routing == 'needs_planning', create a 'save_preview' action: "
+        "{ 'type': 'save_preview', 'payload': { 'goalDraft': ctx.state['goalPreview'], 'iteration': iteration+1 } }.\n"
+        "Always ensure the payload follows the GoalDraft schema and the response is valid JSON "
+        "with keys: reply, action, and state."
     ),
     output_key="final_output"
 )
 
-Example LLM Output:
+Example Output
 
 {
-  "reply": "I've finalized your plan and scheduled it without overlaps!",
+  "reply": "I've refined your plan and ensured no conflicts with your calendar.",
   "action": {
-    "type": "finalize_goal",
+    "type": "save_preview",
     "payload": {
-      "goal": { "title": "Build Portfolio Website" },
-      "milestones": [...]
+      "goalDraft": { "title": "Build Portfolio Website", "milestones": [...] },
+      "iteration": 2
     }
   },
-  "state": { "step": "finalized", "iteration": 3, "sessionActive": false }
+  "state": { "step": "plan_generated", "iteration": 2, "sessionActive": true }
 }
 
 
@@ -287,28 +233,28 @@ Example LLM Output:
 🧾 10️⃣ Response Contract Summary
 
 Field	Type	Description
-reply	string	Final agent message to display to user.
-action.type	"save_preview", "finalize_goal", or "none"	Next backend persistence action.
-action.payload	object	Structured plan or finalized goal.
-state	object	Updated session step, iteration, and activity flag.
+reply	string	LLM’s user-facing message
+action.type	"save_preview", "finalize_goal", or "none"	Next persistence action
+action.payload	object	Structured goalDraft JSON
+state	object	Updated iteration and session flags
 
 
 ⸻
 
 🔒 11️⃣ Security
-	•	All requests authenticated via Cloud Run IAM identity tokens.
-	•	Only backend Cloud Run service may invoke /run.
-	•	Agent is stateless; session state managed in Firestore by backend.
-	•	Validation for user_id and session_id enforced by backend.
+	•	All requests authenticated via Cloud Run IAM identity tokens
+	•	Only backend Cloud Run instance can call /run
+	•	Session state managed by ADK session service (SQL/Firestore)
+	•	Validation for user_id and session_id enforced in backend layer
 
 ⸻
 
 ✅ 12️⃣ Summary
 
 Layer	Responsibility
-Agent Service	Stateless reasoning with structured JSON output (LLM-driven for all agents).
-Backend	Context gathering, DTO assembly, session + data persistence.
-Frontend	User chat interface + goal preview visualization.
+Agent Service	Stateless compute with context persistence in session DB
+Backend	Session + context management; saving previews and goals
+Frontend	Chat interface and goal visualization
 
 
 ⸻
@@ -317,26 +263,32 @@ Frontend	User chat interface + goal preview visualization.
 
 1️⃣ User Input
 
-“Looks good! Let’s finalize this plan.”
+“Add a testing milestone next week, but keep total hours within 20.”
 
 2️⃣ Backend → Agent
-	•	DTO with text + context parts (goalPreview, availableHoursLeft, upcomingTasks).
+	•	Sends only the message and session_id.
+	•	Context (goalPreview, hours, tasks) auto-restored via ctx.state.
 
 3️⃣ Agent Output
 
 {
-  "reply": "I've created your goal and confirmed all tasks fit your schedule 🎯",
+  "reply": "Added a new testing milestone next week, keeping your workload within 18 available hours.",
   "action": {
-    "type": "finalize_goal",
+    "type": "save_preview",
     "payload": {
-      "goal": { "title": "Build Portfolio Website" },
-      "milestones": [...]
+      "goalDraft": {
+        "title": "Build Portfolio Website",
+        "milestones": [
+          { "title": "Testing Phase", "tasks": [{ "title": "Integration Test", "date": "2025-11-17", "estimatedHours": 4 }] }
+        ]
+      },
+      "iteration": 3
     }
   },
-  "state": { "step": "finalized", "sessionActive": false }
+  "state": { "step": "plan_iteration", "sessionActive": true }
 }
 
 
 ⸻
 
-End of Document — Gritto Agent Implementation Spec (LLM-based Agents + Context-Aware DTO)
+End of Document — Gritto Agent Implementation Spec (Context-Bound LLM Agents with Time & Conflict Constraints)

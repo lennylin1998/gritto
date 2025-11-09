@@ -149,7 +149,8 @@ class CheckApprovalAgent(BaseAgent):
 
     async def _run_async_impl(self, ctx) -> AsyncGenerator[Event, None]:  # type: ignore[override]
         state = ctx.session.state
-        incoming_message = _extract_user_message(ctx)
+        print("=======DEBUG input: ", ctx.user_content.parts[0].text)
+        incoming_message = ctx.user_content.parts[0].text
         state["user_goal_text"] = incoming_message
 
         context = _extract_context(ctx)
@@ -167,7 +168,6 @@ class CheckApprovalAgent(BaseAgent):
             "routing": parsed["routing"],
             "detectedConsent": parsed["detectedConsent"],
             "approval_decision": parsed,
-            "user_goal_text": incoming_message,
         }
         if parsed.get("reason"):
             updates["approval_reason"] = parsed["reason"]
@@ -254,7 +254,7 @@ class PlanAgent(BaseAgent):
             )
             return
 
-        message = state.get("user_goal_text") or ""
+        message = ctx.user_content.parts[0].text
         context = state.get("context") or {}
         existing_plan = state.get("proposed_plan")
 
@@ -306,7 +306,6 @@ class FinalizeAgent(BaseAgent):
             raise RuntimeError("LLM finalization response failed strict validation.")
 
         action = final_payload["action"]
-        reply = final_payload["reply"]
         state_updates = _deepcopy_json(final_payload["state"])
 
         action_copy = _deepcopy_json(action)
@@ -314,8 +313,6 @@ class FinalizeAgent(BaseAgent):
         updates["final_response"] = _deepcopy_json(final_payload)
 
         state.update({k: v for k, v in updates.items() if v is not None})
-        if updates.get("user_goal_text") is None:
-            state.pop("user_goal_text", None)
 
         yield Event(
             author=self.name,

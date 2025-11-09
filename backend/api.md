@@ -1629,6 +1629,168 @@ Chat Page startup logic:
 	•	If 201, use new session.
 	2.	Then call /v1/agent/goal/session:message using that sessionId for all messages.
 
+Excellent addition ✅ — that endpoint fits naturally within your Chat Domain (/v1/agent/goal/) alongside session:latest and session:message.
+
+Below is the new endpoint specification that retrieves the full chat history of the current active session, consistent with your existing API style (as in api.md).
+
+⸻
+1️⃣ Endpoint
+
+GET /v1/agent/goal/session/{sessionId}/history
+
+Purpose
+
+Fetch the entire chat transcript for a specific goal-planning session.
+This enables the frontend chat page to restore previous messages when reopening the session.
+
+⸻
+
+Expected Request
+
+Headers
+
+Authorization: Bearer <JWT>
+Content-Type: application/json
+
+Path Parameter
+
+Name	Type	Description
+sessionId	string	The session ID of the current goal agent conversation.
+
+No request body is required.
+
+⸻
+
+Processing Logic
+
+Step	Description	Related Model / Function
+1️⃣	Verify and decode JWT; extract userId.	authMiddleware
+2️⃣	Ensure SessionState exists and belongs to the authenticated user.	SessionStateRepository.findById(sessionId)
+3️⃣	Retrieve Chat document linked to this session.	ChatRepository.findBySessionId(sessionId)
+4️⃣	Return all chat entries sorted chronologically.	
+5️⃣	If no chat found, return empty array.	
+
+
+⸻
+
+Response Example
+
+✅ 200 OK — Chat Found
+
+{
+  "data": {
+    "sessionId": "sess_goal_002",
+    "chatId": "chat_goal_002",
+    "entries": [
+      {
+        "sender": "user",
+        "message": "Let's add a new design milestone next week.",
+        "timestamp": "2025-11-06T10:00:00Z"
+      },
+      {
+        "sender": "agent",
+        "message": "Got it. I’ll schedule the design milestone for next week without overlaps.",
+        "timestamp": "2025-11-06T10:01:10Z"
+      },
+      {
+        "sender": "user",
+        "message": "Looks good. Can you finalize it?",
+        "timestamp": "2025-11-06T10:02:00Z"
+      },
+      {
+        "sender": "agent",
+        "message": "Your plan has been finalized 🎯",
+        "timestamp": "2025-11-06T10:02:30Z"
+      }
+    ]
+  }
+}
+
+
+⸻
+
+Edge Cases
+
+Case	Behavior	Response
+Session not found or belongs to another user	Reject	404 Not Found
+No chat history yet	Return empty entries array	200 OK
+Invalid or missing JWT	Reject	401 Unauthorized
+Internal read error	Return internal error	500 Internal Server Error
+
+
+⸻
+
+Error Examples
+
+❌ 404 Not Found
+
+{
+  "error": {
+    "code": 404,
+    "message": "Session 'sess_goal_999' not found or not owned by this user."
+  }
+}
+
+❌ 401 Unauthorized
+
+{
+  "error": {
+    "code": 401,
+    "message": "Missing or invalid authentication token."
+  }
+}
+
+
+⸻
+
+Function Descriptions
+
+Function	Description
+ChatController.getSessionHistory(req, res)	Main controller to fetch full chat history.
+SessionStateRepository.findById(sessionId)	Ensures session exists and belongs to current user.
+ChatRepository.findBySessionId(sessionId)	Retrieves ordered chat entries from Firestore.
+
+
+⸻
+
+Involved Models
+
+Model	Description
+SessionState	Tracks session lifecycle, links to chatId.
+Chat	Contains ordered chat entries {sender, message, timestamp}.
+User	Validated from JWT.
+
+
+⸻
+
+Side Effects
+
+None — this is a read-only endpoint.
+
+⸻
+
+Summary Table
+
+Method	Path	Purpose	Controller	Models	Side Effects
+GET	/v1/agent/goal/session/{sessionId}/history	Retrieve full chat transcript for a session	ChatController.getSessionHistory	SessionState, Chat, User	None
+
+
+⸻
+
+Security
+	•	Requires valid JWT (same as /v1/agent/goal/session:message)
+	•	Returns only sessions owned by the authenticated user
+	•	Never exposes other users’ messages or metadata
+
+⸻
+
+Usage Example (Frontend)
+
+When opening the Chat page:
+	1.	Call GET /v1/agent/goal/session:latest → get sessionId
+	2.	Then call GET /v1/agent/goal/session/{sessionId}/history → populate all chat messages in chronological order
+	3.	Resume chat with /v1/agent/goal/session:message
+
 ⸻
 
 🤖 Agent Domain API (Final Version – with Remote Session Bootstrap)
