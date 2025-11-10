@@ -8,18 +8,14 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-RUN adduser --disabled-password --gecos "" appuser && \
-    chown -R appuser:appuser /app
-
 COPY goal_planning_agent ./goal_planning_agent
 COPY main.py ./main.py
 
 USER appuser
-ENV PATH="/home/appuser/.local/bin:$PATH"
 
 ENV AGENT_LLM_MODEL="gemini-2.0-flash" \
     AGENT_STRICT_LLM="true"
 
 EXPOSE 8080
 
-CMD ["sh", "-c", "uvicorn main:app --host 0.0.0.0 --port ${PORT:-8080}"]
+CMD ["adk", "api_server", "--host", "0.0.0.0", "--port", "8080"]
