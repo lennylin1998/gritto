@@ -39,6 +39,7 @@ import {
     createSession,
     findLatestActiveSession,
     findSessionById,
+    listChatMessagesBySessionId,
     updateSession,
 } from './repositories/sessionRepository';
 import { findGoalPreviewById, GoalPreviewRecord, upsertGoalPreview } from './repositories/goalPreviewRepository';
@@ -1013,6 +1014,38 @@ app.get(
             const context = await buildUserContext(user);
             session = await createSession({ userId, context });
             res.status(201).json({ data: serializeSession(session) });
+        } catch (error) {
+            next(error);
+        }
+    }
+);
+
+app.get(
+    '/v1/agent/goal/session/:sessionId/history',
+    authMiddleware,
+    async (req: Request, res: Response, next: NextFunction) => {
+        try {
+            const userId = req.user?.userId;
+            assert(userId, 401, 'Unauthorized');
+            const sessionId = typeof req.params.sessionId === 'string' ? req.params.sessionId.trim() : '';
+            assert(sessionId.length > 0, 400, 'sessionId is required.');
+
+            const session = await findSessionById(sessionId);
+            assert(session, 404, `Session '${sessionId}' not found or not owned by this user.`);
+            assert(session.userId === userId, 404, `Session '${sessionId}' not found or not owned by this user.`);
+
+            const chatEntries = await listChatMessagesBySessionId(session.id);
+            res.json({
+                data: {
+                    sessionId: session.id,
+                    chatId: session.chatId,
+                    entries: chatEntries.map((entry) => ({
+                        sender: entry.sender,
+                        message: entry.message,
+                        timestamp: entry.createdAt,
+                    })),
+                },
+            });
         } catch (error) {
             next(error);
         }

@@ -1,6 +1,6 @@
 import { getFirestore } from '../firebase';
 import { ApiError } from '../errors';
-import { SessionStateRecord } from '../types/models';
+import { ChatMessageRecord, SessionStateRecord } from '../types/models';
 
 const SESSION_COLLECTION = 'SessionState';
 const CHAT_COLLECTION = 'Chat';
@@ -137,4 +137,24 @@ export async function appendChatMessage(input: ChatMessageInput): Promise<void> 
     });
     await db.collection(CHAT_COLLECTION).doc(input.chatId).update({ updatedAt: now });
     await db.collection(SESSION_COLLECTION).doc(input.sessionId).update({ updatedAt: now });
+}
+
+export async function listChatMessagesBySessionId(sessionId: string): Promise<ChatMessageRecord[]> {
+    const db = getFirestore();
+    const snapshot = await db
+        .collection(CHAT_MESSAGE_COLLECTION)
+        .where('sessionId', '==', sessionId)
+        .orderBy('createdAt', 'asc')
+        .get();
+    return snapshot.docs.map((doc) => {
+        const data = doc.data();
+        return {
+            id: doc.id,
+            sessionId: data.sessionId as string,
+            chatId: data.chatId as string,
+            sender: data.sender as ChatMessageRecord['sender'],
+            message: data.message as string,
+            createdAt: (data.createdAt as string | undefined) ?? new Date().toISOString(),
+        } satisfies ChatMessageRecord;
+    });
 }

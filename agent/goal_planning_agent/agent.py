@@ -6,16 +6,15 @@ import os
 from datetime import datetime, timezone
 from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple
 
-from google.adk.agents import BaseAgent, SequentialAgent
+from google.adk.agents import BaseAgent, LlmAgent, SequentialAgent
+from google.adk.agents.callback_context import CallbackContext
+from google.adk.agents.invocation_context import InvocationContext
+from google.adk.agents.readonly_context import ReadonlyContext
 from google.adk.events import Event, EventActions
 from google.genai import types
+from pydantic import BaseModel, Field, field_validator
 
-# from google.adk.agents.callback_context import CallbackContext
-# from google.adk.models.llm_request import LlmRequest
-# from google.adk.models.llm_response import LlmResponse
-from google.adk.agents.invocation_context import InvocationContext
-
-from .llm import GeminiJsonResponder, GeminiPlanner
+from .llm import GeminiJsonResponder
 
 load_dotenv()
 _MODEL_NAME = os.getenv("AGENT_LLM_MODEL")
@@ -23,9 +22,6 @@ _API_KEY = os.getenv("GOOGLE_API_KEY")
 _STRICT = os.getenv("AGENT_STRICT_LLM", "false").lower() in {"1", "true", "yes"}
 _APP_NAME = "goal_planning_agent"
 
-
-
-_planner = GeminiPlanner(model_name=_MODEL_NAME, api_key=_API_KEY)
 _json_responder = GeminiJsonResponder(model_name=_MODEL_NAME, api_key=_API_KEY)
 
 
@@ -35,7 +31,7 @@ def _text_content(message: str) -> types.Content:
 
 def _deepcopy_json(value: Dict[str, Any]) -> Dict[str, Any]:
     try:
-        return json.loads(json.dumps(value))
+        return json.loads(json.dumps(value, default=str))
     except TypeError:
         try:
             return dict(value)
@@ -202,6 +198,71 @@ def _my_before_model_cb(ctx: InvocationContext) -> None:
         if isinstance(iteration, int):
             state["iteration"] = iteration
 
+class IsoTimestamp(BaseModel):
+    timestamp: datetime = Field(description="UTC time in ISO8601 format with 'Z' suffix")
+
+    @field_validator("timestamp", mode="before")
+    def enforce_utc(cls, v):
+        if isinstance(v, datetime):
+            return v.astimezone(timezone.utc)
+        return datetime.fromisoformat(v.replace("Z", "+00:00"))
+
+class PlanTaskSchema(BaseModel):
+    title: str
+    description: str
+    date: IsoTimestamp
+    estimatedHours: float
+
+
+class PlanMilestoneSchema(BaseModel):
+    title: str
+    description: str
+    tasks: List[PlanTaskSchema] = Field(..., min_length=1)
+
+
+class PlanGoalSchema(BaseModel):
+    title: str
+    description: str
+
+
+class PlanOutputSchema(BaseModel):
+    goal: PlanGoalSchema
+    milestones: List[PlanMilestoneSchema] = Field(..., min_length=1)
+    iteration: Optional[int] = None
+
+
+def _plan_instruction(ctx: ReadonlyContext) -> str:
+    state = ctx.state
+    state_context = state.get("context", {}) or {}
+    plan = state.get("proposed_plan") or state.get("goal_preview")
+    available_hours = state_context.get("availableHoursLeft") or state.get("available_hours_left")
+    upcoming_tasks = state_context.get("upcomingTasks") or state.get("upcoming_tasks") or []
+    snapshot = {
+        "existingPlan": plan,
+        "availableHoursLeft": available_hours,
+        "upcomingTasks": upcoming_tasks,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
+    context_json = json.dumps(snapshot, ensure_ascii=False, indent=2, default=str)
+    return (
+        "You are a goal planning assistant. Use the latest user input together with the context JSON below "
+        "to generate or refine a single coherent goal plan. Respect availableHoursLeft, avoid overlapping "
+        "upcomingTasks, and keep milestones/task sequencing realistic for the provided timestamp. "
+        "Always return STRICT JSON that matches the output_schema (top-level keys: goal, milestones and iteration)."
+        f"\n\nPlanning context:\n{context_json}\n"
+    )
+
+
+def _plan_before_agent_callback(*, callback_context: CallbackContext):
+    state = callback_context.state
+    routing = state.get("routing") or "needs_planning"
+    if routing == "finalize_only" and not state.get("proposed_plan"):
+        routing = "needs_planning"
+        state["routing"] = routing
+    if routing == "finalize_only":
+        return _text_content("Routing skip: finalize_only")
+    return None
+
 class CheckApprovalAgent(BaseAgent):
     def __init__(self, responder: GeminiJsonResponder, *, strict: bool = False) -> None:
         super().__init__(
@@ -240,7 +301,7 @@ class CheckApprovalAgent(BaseAgent):
 
         yield Event(
             author=self.name,
-            content=_text_content(json.dumps(parsed)),
+            content=_text_content(json.dumps(parsed, default=str)),
             actions=EventActions(state_delta=updates),
         )
 
@@ -293,70 +354,16 @@ class CheckApprovalAgent(BaseAgent):
         return {"routing": routing, "detectedConsent": detected, "reason": reason}
 
 
-class PlanAgent(BaseAgent):
-    def __init__(self, planner: GeminiPlanner, *, strict: bool = False) -> None:
-        super().__init__(
-            name="PlanAgent",
-            description="Generates or refines the goal preview JSON via Gemini.",
-        )
-        self._planner = planner
-        self._strict = strict
-        self.output_schema = {
-            "goal": {
-                "title": "string",
-                "description": "string",
-                "milestones": [
-                    {
-                        "title": "string",
-                        "description": "string",
-                        "tasks": [
-                            {
-                                "title": "string",
-                                "description": "string",
-                                "date": "Timestamp",
-                                "estimatedHours": "number"
-                            }
-                        ]
-                    }
-                ]
-            }
-        }
-
-    async def _run_async_impl(self, ctx) -> AsyncGenerator[Event, None]:  # type: ignore[override]
-        state = ctx.session.state
-        routing = state.get("routing") or "needs_planning"
-        state_delta: Dict[str, Any] = {}
-        if routing == "finalize_only" and not state.get("proposed_plan"):
-            routing = "needs_planning"
-            state["routing"] = routing
-            state_delta["routing"] = routing
-
-        if routing == "finalize_only":
-            yield Event(
-                author=self.name,
-                content=_text_content("Routing skip: finalize_only"),
-            )
-            return
-
-        message = ctx.user_content.parts[0].text
-        context = state.get("context") or {}
-        existing_plan = state.get("proposed_plan")
-
-        plan = await self._planner.generate_plan(
-            message=message,
-            context=context,
-            existing_plan=existing_plan,
-            strict=self._strict,
-        )
-        plan_copy = _deepcopy_json(plan)
-        state["proposed_plan"] = plan_copy
-
-        delta = {**state_delta, "proposed_plan": plan_copy}
-        yield Event(
-            author=self.name,
-            content=_text_content(json.dumps(plan_copy)),
-            actions=EventActions(state_delta=delta),
-        )
+_plan_agent = LlmAgent(
+    name="PlanAgent",
+    description="Generates or refines the goal preview JSON via Gemini through the ADK LlmAgent.",
+    model=_MODEL_NAME or "gemini-1.5-pro-latest",
+    instruction=_plan_instruction,
+    before_agent_callback=_plan_before_agent_callback,
+    output_key="proposed_plan",
+    output_schema=PlanOutputSchema,
+    generate_content_config=types.GenerateContentConfig(response_mime_type="application/json"),
+)
 
 
 class FinalizeAgent(BaseAgent):
@@ -400,7 +407,7 @@ class FinalizeAgent(BaseAgent):
 
         yield Event(
             author=self.name,
-            content=_text_content(json.dumps(final_payload)),
+            content=_text_content(json.dumps(final_payload, default=str)),
             actions=EventActions(state_delta=updates),
         )
 
@@ -504,7 +511,7 @@ class FinalizeAgent(BaseAgent):
         plan: Dict[str, Any],
         state: Dict[str, Any],
     ) -> Dict[str, Any]:
-        enriched = json.loads(json.dumps(payload)) if payload else {}
+        enriched = json.loads(json.dumps(payload, default=str)) if payload else {}
         if action_type == "finalize_goal":
             enriched.setdefault("goalPreviewId", plan.get("id"))
             enriched.setdefault("goal", plan.get("goal", {}))
@@ -550,7 +557,7 @@ root_agent = SequentialAgent(
     description="Three-step workflow: classify approval, generate plan, finalize response.",
     sub_agents=[
         CheckApprovalAgent(_json_responder, strict=_STRICT),
-        PlanAgent(_planner, strict=_STRICT),
+        _plan_agent,
         FinalizeAgent(_json_responder, strict=_STRICT),
     ],
 )
