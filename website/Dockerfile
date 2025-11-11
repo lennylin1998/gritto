@@ -1,11 +1,11 @@
-FROM nginx:1.27-alpine
+# Use the official Nginx image
+FROM nginx:alpine
 
-# Remove default nginx static assets
-RUN rm -rf /usr/share/nginx/html/*
+# Copy your static site into Nginx’s web root
+COPY . /usr/share/nginx/html
 
-# Copy static site
-COPY index.html styles.css /usr/share/nginx/html/
-COPY assets /usr/share/nginx/html/assets
-COPY nginx.conf /etc/nginx/nginx.conf
+# Expose port 8080 (Cloud Run expects this)
+EXPOSE 8080
 
-EXPOSE 8090
+# Override default Nginx config to listen on port 8080
+RUN sed -i 's/80/8080/g' /etc/nginx/conf.d/default.conf
